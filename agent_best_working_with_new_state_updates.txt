@@ -1,0 +1,363 @@
+import os
+import sys
+import random 
+import json
+import math
+import utils
+import time
+import config
+import numpy as np
+seed = np.random.randint(1, 200000)
+random.seed(73)
+
+class Agent:
+    def __init__(self, table_config) -> None:
+        self.table_config = table_config
+        self.prev_action = None
+        self.curr_iter = 0
+        self.state_dict = {}
+        self.holes = []
+        self.ns = utils.NextState()
+
+    def set_holes(self, holes_x, holes_y, radius):
+        for x in holes_x:
+            for y in holes_y:
+                self.holes.append((x[0], y[0]))
+        self.ball_radius = radius
+
+    def is_visible(self, white_ball_pos, hole_pos, ball_pos):
+        # Calculate vectors from the white ball to the hole and from the ball to the hole
+        vector_to_hole = np.array(ball_pos) - np.array(white_ball_pos)
+        vector_to_ball = np.array(hole_pos) - np.array(ball_pos)
+
+        # Calculate the dot product
+        dot_product = np.dot(vector_to_hole, vector_to_ball) / (np.linalg.norm(vector_to_hole) * np.linalg.norm(vector_to_ball))
+
+        print(f"The confidence factor is {dot_product}")
+        # If the dot product is greater than or equal to 0, the hole is visible
+        return dot_product
+
+    def get_visible_holes(self, white_ball_pos, hole_positions, ball_pos):
+        visible_holes = []
+
+        for hole_pos in hole_positions:
+            confidence = self.is_visible(white_ball_pos, hole_pos, ball_pos)
+            if confidence >= 0:
+                visible_holes.append(hole_pos)
+
+        return visible_holes
+
+    def ball_white_closest(self, ball_pos, white_ball_pos, available_holes):
+        closest_ball = None
+        closest_distance = float('inf')
+        potting_hole = None
+
+        for ball_label, ball_position in ball_pos.items():
+            # Calculate the distance between the white ball and the current ball
+            distance = np.sqrt((ball_position[0] - white_ball_pos[0])**2 + (ball_position[1] - white_ball_pos[1])**2)
+
+            # Check if the current ball is the closest one so far
+            if distance < closest_distance:
+                closest_ball = ball_label
+                closest_distance = distance
+
+                # Find the nearest available hole for potting
+                nearest_hole = self.find_nearest_hole(ball_position, available_holes)
+                print(f"Nearest Hole is {nearest_hole}")
+                if nearest_hole is not None:
+                    potting_hole = nearest_hole
+
+                    # # Check if the potting hole is in the list of visible holes
+                    # possible_holes = self.get_visible_holes(white_ball_pos, available_holes, ball_position)
+                    # if potting_hole in available_holes:
+                    return closest_ball, potting_hole
+
+        return None, None
+
+    def find_nearest_hole(self, ball_position, available_holes):
+        nearest_hole = None
+        min_distance = float('inf')
+
+        for hole in available_holes:
+            distance = np.sqrt((ball_position[0] - hole[0])**2 + (ball_position[1] - hole[1])**2)
+
+            if distance < min_distance:
+                min_distance = distance
+                nearest_hole = hole
+
+        return nearest_hole
+
+    def ball_hole_closest(self, ball, holes):
+        distance = float('inf')
+        best_hole = None  # Initialize best_hole to None
+        for index, hole in enumerate(holes):
+            current_distance = (hole[0] - ball[0])**2 + (hole[1] - ball[1])**2
+            if current_distance < distance:
+                distance = current_distance
+                best_hole = index
+            # print(f"Index {index} hole {hole} Distance {distance}")
+        return int(best_hole), distance
+
+    def angle_vector(self, a, b):
+        
+        if(b[0] > a[0]):
+            theta1 = np.arctan((b[1] - a[1])/(b[0] - a[0]))
+            theta = -1*(math.pi/2 + theta1)
+        elif(b[0] == a[0]):
+            if(b[1] >= a[1]):
+                theta1 = math.pi/2
+                theta = -1*(math.pi/2 + theta1)
+            else:
+                theta1 = -1*math.pi/2
+                theta = -1*(math.pi/2 + theta1)
+        else:
+            theta1 = np.arctan((b[1] - a[1])/(b[0] - a[0]))
+            theta = -1*(-1*math.pi/2 + theta1)
+
+        return theta
+
+    def line_joining(self, point, theta, mag):
+        result = np.zeros(2)
+        result[0] = point[0] - mag*math.sin(theta)
+        result[1] = point[1] - mag*math.cos(theta)
+        return result
+    
+    def decide_white_shooting_direction(self, white_ball_pos, ball_pos, hole_pos_label, pseudo_holes):
+        hole_pos = pseudo_holes[hole_pos_label]
+        theta = self.angle_vector(hole_pos, ball_pos)
+        # print(theta*180/math.pi)
+        point_of_contact = self.line_joining(ball_pos, theta, 2*self.ball_radius)
+        # point_of_contact = ball_pos
+        print(180*self.angle_vector( white_ball_pos, point_of_contact)/math.pi)
+        return self.angle_vector( white_ball_pos, point_of_contact)
+
+    def decide_force(self, white_ball_pos, ball_pos, best_hole_label, holes, confidence, straight_shot):
+        hole_pos = holes[best_hole_label]
+        if(self.distance(ball_pos, hole_pos) <= 30):
+            return 0.8
+        theta = self.angle_vector(hole_pos, ball_pos)
+        # print(theta*180/math.pi)
+        point_of_contact = self.line_joining(ball_pos, theta, 2*self.ball_radius)
+        # print(180*self.angle_vector( white_ball_pos, point_of_contact)/math.pi)
+        direction_of_white_ball = self.angle_vector(white_ball_pos, point_of_contact)   
+        # return 1/abs(np.cos(direction_of_white_ball - theta))
+        # return 0.3
+        distance_white_color =  np.sqrt((white_ball_pos[0] - ball_pos[0])**2 + (white_ball_pos[1] - ball_pos[1])**2)
+        distance_white_color /= np.sqrt(960**2 + 460**2)
+        print(f"Distance white color {distance_white_color}")
+        # force = distance_white_color
+        if(straight_shot):
+            # return 0.2*distance_white_color + confidence*0.5
+            return 0.5*distance_white_color + confidence*0.3
+        return 0.5*distance_white_color + confidence*0.3
+        # return 0.1*distance_white_color + confidence*0.5
+        # return 0.4 + confidence*0.3
+
+    def decide_force_hard(self, direction, white_ball_pos, ball_pos_dict, hole_pos, ball_pos, confidence):
+        # Define a range of force values to test
+        force_range = np.linspace(0, 1.0, 20)  # Adjust the range as needed
+        for force in force_range:
+            # Simulate a shot with the current force
+            action = (direction/math.pi, force)
+            # print(ball_pos)
+            next_state = self.ns.get_next_state(ball_pos_dict, action, seed)  # Adjust seed as needed
+
+            # Check if the ball has been potted in the next state
+            if self.ball_potted(next_state, ball_pos_dict):
+                print("Used next state strategy")
+                return force  # Return the force that results in potting the ball
+
+        # If no force results in potting, return a default value
+        return self.decide_force(white_ball_pos, ball_pos, hole_pos, confidence)  # You can choose a default force value
+
+    def ball_potted(self, next_state, ball_pos):
+        # Check if the number of color balls (excluding white and label 0) in the next state is one less than the current state
+        current_num_color_balls = sum(1 for label in ball_pos if label != 'white' and label != 0)
+        next_num_color_balls = sum(1 for label in next_state if label != 'white' and label != 0)
+        return current_num_color_balls - next_num_color_balls >= 1
+
+    def decide_force_smart(self, direction, white_ball_pos, ball_pos_dict, hole_pos, ball_pos, ball_label, confidence, straight_shot, best_hole_label, holes_array):
+        # Define a range of force values to test
+        initial_force_range = np.linspace(0, 1.0, 5)
+
+        for initial_force in initial_force_range:
+            force = self.optimize_force(white_ball_pos, ball_pos, hole_pos, initial_force, direction, ball_pos_dict, ball_label ,seed)
+            if force is not None:
+                return force
+
+        print(hole_pos)
+        print(ball_pos)
+        return self.decide_force(white_ball_pos, ball_pos, best_hole_label, holes_array, confidence, straight_shot)
+
+    def optimize_force(self, white_ball_pos, ball_pos, hole_pos, initial_force, direction, ball_pos_dict, ball_label, seed):
+        max_iterations = 5
+        force = initial_force
+        previous_shot_success = False
+        previous_state = ball_pos_dict
+        for _ in range(max_iterations):
+            action = (direction/math.pi, force)
+            print(ball_pos_dict)
+            next_state = self.ns.get_next_state(ball_pos_dict, action, seed)
+            print(next_state)
+            print(previous_state)
+            if self.ball_potted(next_state, ball_pos_dict):
+                print(f"Returning from optimisation with positive results and force {force}")
+                return force  # Return the force that results in potting the ball
+
+            # If the shot didn't pot the ball, adjust the force for the next iteration
+            if previous_shot_success:
+                force += 0.04  # Increase force for fine-tuning
+            else:
+                force += 0.01  # Smaller step size when not making progress
+
+            previous_shot_success = False
+            # Check if the shot is closer to potting than the previous one
+
+            if self.distance(next_state[ball_label], hole_pos) < self.distance(previous_state[ball_label], hole_pos):
+                previous_shot_success = True
+
+            previous_state = next_state
+
+        return None  # No force value resulted in potting the ball
+
+    def distance(self, point1, point2):
+        return math.sqrt((point2[1] - point1[1])**2 + (point2[0] - point1[0])**2)
+
+    def is_line_segment_intersection(self, point1, point2, obstacle, radius):
+        # A = point1[1] - point2[1]
+        A = point2[1] - point1[1]
+        B = (point2[0] - point1[0])*-1
+        C = (point1[0]*point2[1] - point2[0]*point1[1])*-1
+        # C = 2*point2[1]*
+
+        d = abs(A*obstacle[0] + B*obstacle[1] + C) / (A**2 + B**2)**0.5
+        
+        print("Perpendicular distance captured ", d)
+
+        return d <= radius
+
+    def is_obstructed(self, pointa, pointb, obstacles, ball_radius):
+        for obstacle in obstacles:
+            if(pointb == obstacle or pointa == obstacle):
+                continue
+            if self.is_line_segment_intersection(pointa, pointb, obstacle, ball_radius):
+                # Check if the obstacle is within the bounding box of the line segment
+                min_x = min(pointa[0], pointb[0])
+                max_x = max(pointa[0], pointb[0])
+                min_y = min(pointa[1], pointb[1])
+                max_y = max(pointa[1], pointb[1])
+
+                if min_x <= obstacle[0] <= max_x and min_y <= obstacle[1] <= max_y:
+                    return True
+        return False
+
+    def select_best_shot(self, ball_positions,white_ball_pos, hole_locations, ball_radius):
+        # ball_positions.pop(0, None)
+        # white_ball_pos = ball_positions.pop("white", None)
+        # self.ball_white_closest(ball_positions, white_ball_pos, hole_locations)
+        best_pair = self.ball_white_closest(ball_positions, white_ball_pos, hole_locations)
+        best_score = float('-inf')
+        straight_shot = 0
+        # if(self.distance(ball_positions[best_pair[0]], best_pair[1]) <= 30):
+        #     return 1, best_pair
+        for ball_label, ball_pos in ball_positions.items():
+            for hole_pos in hole_locations:
+                confidence = self.is_visible(white_ball_pos, hole_pos, ball_pos)
+                is_obstructed_white = self.is_obstructed(white_ball_pos, ball_pos, ball_positions.values(), ball_radius)
+                is_obstructed_hole = self.is_obstructed(ball_pos, hole_pos, ball_positions.values(), ball_radius)
+                print(is_obstructed_hole)
+                print(is_obstructed_white)
+                minimal_condition = 1 if (not is_obstructed_white) and (not is_obstructed_hole) and (confidence >= 0) else 0
+                if(minimal_condition > 0):
+                    score = 0.9*confidence * minimal_condition - 1.5*self.distance(white_ball_pos, ball_pos)/math.sqrt((960)**2 + (460)**2) - 1.5*self.distance(hole_pos, ball_pos)/math.sqrt((960)**2 + (460)**2)
+                    print("Score ",score)
+                    if score >= best_score:
+                        best_score = score
+                        best_pair = (ball_label, hole_pos)
+                        straight_shot = 1
+        return straight_shot, best_pair
+
+    def perturbate_direction(self, direction, force):
+        # Define a function to calculate the standard deviation (sigma) based on the force
+        def calculate_sigma(force):
+            # You can customize this function based on your requirements
+            # For example, you can increase sigma linearly with force
+            return force  # Modify this as needed
+
+        # Calculate the standard deviation (sigma) for the normal distribution
+        sigma = calculate_sigma(force)
+
+        # Generate a random angle deviation from a normal distribution
+        angle_deviation = np.clip(np.random.normal(0, sigma), -2.5, 2.5)/180
+        # angle_deviation = np.random.normal(loc=0, scale=sigma)
+
+        # Add the angle deviation to the original direction
+        perturbed_direction = direction + angle_deviation
+
+        return perturbed_direction
+
+    def action(self, ball_pos=None):
+        print(f"Table config {self.table_config}")
+
+        holes = self.holes
+        pseudo_holes = []
+        hole_radius = 24 + 1
+        displacement_measure = 40 + 1
+        hole_1 = (holes[0][0] + displacement_measure, holes[0][1] + displacement_measure)
+        hole_2 = (holes[1][0] + displacement_measure, holes[1][1] - displacement_measure)
+        hole_3 = (holes[4][0] - displacement_measure, holes[4][1] + displacement_measure)
+        hole_4 = (holes[5][0] - displacement_measure, holes[5][1] - displacement_measure)
+
+        hole_middle_1 = (holes[2][0], holes[2][1] + hole_radius)
+        hole_middle_2 = (holes[3][0], holes[3][1] - hole_radius)
+        pseudo_holes.append(hole_1)
+        pseudo_holes.append(hole_2)
+        pseudo_holes.append(hole_middle_1)
+        pseudo_holes.append(hole_middle_2)
+        pseudo_holes.append(hole_3)
+        pseudo_holes.append(hole_4)
+
+        white_ball_pos = ball_pos['white']
+        new_ball_pos = {ball_label: position for ball_label, position in ball_pos.items() if ball_label != 'white' and ball_label != 0}
+        print(holes)
+        print(ball_pos)
+        possible_holes = pseudo_holes
+        print(f"Possible Holes are {possible_holes}")
+        straight_shot, (ball_label, best_hole) = self.select_best_shot(new_ball_pos, white_ball_pos, possible_holes, self.ball_radius)   
+        if(best_hole != None):     
+
+            best_hole_label = pseudo_holes.index(best_hole)
+            best_ball = new_ball_pos[ball_label]
+
+            print(f"Best ball is {ball_label}")
+
+            print(f"The best hole pos {best_hole}")
+
+            direction = self.decide_white_shooting_direction(white_ball_pos, best_ball, best_hole_label, pseudo_holes)
+            confidence = self.is_visible(white_ball_pos, holes[best_hole_label], best_ball)
+
+            print(f"Current ball pos {ball_pos}")
+            force = self.decide_force_smart(direction, white_ball_pos, ball_pos, best_hole, best_ball, ball_label, confidence, straight_shot, best_hole_label, possible_holes)
+  
+            return (direction/math.pi, force)
+        else:
+            possible_holes = holes
+            straight_shot, (ball_label, best_hole) = self.select_best_shot(new_ball_pos, white_ball_pos, possible_holes, self.ball_radius)   
+            best_hole_label = holes.index(best_hole)
+            best_ball = new_ball_pos[ball_label]
+            print(f"Best ball is {ball_label}")
+            print(f"The best hole pos {best_hole}")
+
+            direction = self.decide_white_shooting_direction(white_ball_pos, best_ball, best_hole_label, holes)
+            confidence = self.is_visible(white_ball_pos, best_hole, best_ball)
+
+            best_hole = holes[best_hole_label]
+            # force = self.decide_force(white_ball_pos, best_ball, best_hole_label, holes, confidence, straight_shot)
+            print(f"Current ball pos {ball_pos}")
+            force = self.decide_force_smart(direction, white_ball_pos, ball_pos, best_hole, best_ball, ball_label, confidence, straight_shot, best_hole_label, possible_holes)
+            # print(force)
+            # return (-0.5, 0.1)
+            force = np.clip(force, 0, 1)  
+            direction = self.perturbate_direction(direction, force)  
+            return (direction/math.pi, force)
+        # return(0.5, 0.1)

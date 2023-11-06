@@ -1,0 +1,220 @@
+import os
+import sys
+import random 
+import json
+import math
+import utils
+import time
+import config
+import numpy as np
+random.seed(73)
+
+class Agent:
+    def __init__(self, table_config) -> None:
+        self.table_config = table_config
+        self.prev_action = None
+        self.curr_iter = 0
+        self.state_dict = {}
+        self.holes = []
+        self.ns = utils.NextState()
+
+    def set_holes(self, holes_x, holes_y, radius):
+        for x in holes_x:
+            for y in holes_y:
+                self.holes.append((x[0], y[0]))
+        self.ball_radius = radius
+
+    def is_visible(self, white_ball_pos, hole_pos, ball_pos):
+        # Calculate vectors from the white ball to the hole and from the ball to the hole
+        vector_to_hole = np.array(hole_pos) - np.array(white_ball_pos)
+        vector_to_ball = np.array(hole_pos) - np.array(ball_pos)
+
+        # Calculate the dot product
+        dot_product = np.dot(vector_to_hole, vector_to_ball)
+
+        # If the dot product is greater than or equal to 0, the hole is visible
+        return dot_product >= 0
+
+    def get_visible_holes(self, white_ball_pos, hole_positions, ball_pos):
+        visible_holes = []
+
+        for hole_pos in hole_positions:
+            if self.is_visible(white_ball_pos, hole_pos, ball_pos):
+                visible_holes.append(hole_pos)
+
+        return visible_holes
+
+    def ball_white_closest(self, ball_pos, white_ball_pos, available_holes):
+        closest_ball = None
+        closest_distance = float('inf')
+        potting_hole = None
+
+        for ball_label, ball_position in ball_pos.items():
+            # Calculate the distance between the white ball and the current ball
+            distance = np.sqrt((ball_position[0] - white_ball_pos[0])**2 + (ball_position[1] - white_ball_pos[1])**2)
+
+            # Check if the current ball is the closest one so far
+            if distance < closest_distance:
+                closest_ball = ball_label
+                closest_distance = distance
+
+                # Find the nearest available hole for potting
+                nearest_hole = self.find_nearest_hole(ball_position, available_holes)
+
+                if nearest_hole is not None:
+                    potting_hole = nearest_hole
+
+                    # Check if the potting hole is in the list of visible holes
+                    possible_holes = self.get_visible_holes(white_ball_pos, available_holes, ball_position)
+                    if potting_hole in possible_holes:
+                        return ball_position, potting_hole
+
+        return None, None
+
+    def find_nearest_hole(self, ball_position, available_holes):
+        nearest_hole = None
+        min_distance = float('inf')
+
+        for hole in available_holes:
+            distance = np.sqrt((ball_position[0] - hole[0])**2 + (ball_position[1] - hole[1])**2)
+
+            if distance < min_distance:
+                min_distance = distance
+                nearest_hole = hole
+
+        return nearest_hole
+
+    def ball_hole_closest(self, ball, holes):
+        distance = float('inf')
+        best_hole = None  # Initialize best_hole to None
+        for index, hole in enumerate(holes):
+            current_distance = (hole[0] - ball[0])**2 + (hole[1] - ball[1])**2
+            if current_distance < distance:
+                distance = current_distance
+                best_hole = index
+            # print(f"Index {index} hole {hole} Distance {distance}")
+        return int(best_hole), distance
+
+    
+    def angle_vector(self, a, b):
+        
+        if(b[1] > a[1]):
+            if(b[0] > a[0]):
+                theta1 = np.arctan((b[1] - a[1])/(b[0] - a[0]))
+            elif(b[0] == a[0]):
+                theta1 = np.pi/2
+            else:
+                theta1 = np.pi + np.arctan((b[1] - a[1])/(b[0] - a[0]))
+        else:
+            if(b[0] > a[0]):
+                theta1 = np.arctan((b[1] - a[1])/(b[0] - a[0]))
+            elif(b[0] == a[0]):
+                theta1 = -1*np.pi/2
+            else:
+                theta1 = -1*np.pi + np.arctan((b[1] - a[1])/(b[0] - a[0]))
+
+        # theta1 = np.arctan((b[1] - a[1])/(b[0] - a[0]))
+        theta = -1*(np.pi/2 + theta1)
+        if(-3*np.pi/2 <= theta <= -1*np.pi):
+            return theta + 2*np.pi
+        return theta
+
+    def line_joining(self, point, theta, mag):
+        result = np.zeros(2)
+        result[0] = point[0] - mag*np.sin(theta)
+        result[1] = point[1] - mag*np.cos(theta)
+        return result
+    
+    def decide_white_shooting_direction(self, white_ball_pos, ball_pos, hole_pos):
+        theta = self.angle_vector(hole_pos, ball_pos)
+        # print(theta*180/np.pi)
+        point_of_contact = self.line_joining(ball_pos, theta, 2*self.ball_radius)
+        # point_of_contact = ball_pos
+        print(180*self.angle_vector( white_ball_pos, point_of_contact)/np.pi)
+        return self.angle_vector( white_ball_pos, point_of_contact)
+
+    def decide_force(self, white_ball_pos, ball_pos, hole_pos):
+        theta = self.angle_vector(hole_pos, ball_pos)
+        # print(theta*180/np.pi)
+        point_of_contact = self.line_joining(ball_pos, theta, 2*self.ball_radius)
+        # print(180*self.angle_vector( white_ball_pos, point_of_contact)/np.pi)
+        direction_of_white_ball = self.angle_vector(white_ball_pos, point_of_contact)   
+        # return 1/abs(np.cos(direction_of_white_ball - theta))
+        # return 0.3
+        distance_white_color =  np.sqrt((white_ball_pos[0] - ball_pos[0])**2 + (white_ball_pos[1] - ball_pos[1])**2)
+        distance_white_color /= np.sqrt(960**2 + 460**2)
+        print(f"Distance white color {distance_white_color}")
+        # force = distance_white_color
+        return 0.2 + distance_white_color * abs(np.sin(direction_of_white_ball - theta))
+    
+    def decide_force_hard(self, direction, white_ball_pos, ball_pos, hole_pos):
+        # Define a range of force values to test
+        force_range = np.linspace(0.1, 1.0, 10)  # Adjust the range as needed
+        seed = 73
+        for force in force_range:
+            # Simulate a shot with the current force
+            action = (direction/np.pi, force)
+            # print(ball_pos)
+            next_state = self.ns.get_next_state(ball_pos, action, seed)  # Adjust seed as needed
+
+            # Check if the ball has been potted in the next state
+            if self.ball_potted(next_state, ball_pos):
+                return force  # Return the force that results in potting the ball
+
+        # If no force results in potting, return a default value
+        return 0.5  # You can choose a default force value
+
+    def ball_potted(self, next_state, ball_pos):
+        # Check if the number of balls in the next state is one less than the current state
+        current_num_balls = len(ball_pos)
+        next_num_balls = len(next_state)
+        return current_num_balls - next_num_balls == 1
+
+
+    def action(self, ball_pos=None):
+        print(f"Table config {self.table_config}")
+        ## Code you agent here ##
+        ## You can access data from config.py for geometry of the table, configuration of the levels, etc.
+        ## You are NOT allowed to change the variables of config.py (we will fetch variables from a different file during evaluation)
+        ## Do not use any library other than those that are already imported.
+        ## Try out different ideas and have fun!
+        holes = self.holes        
+        white_ball_pos = ball_pos['white']
+        new_ball_pos = {ball_label: position for ball_label, position in ball_pos.items() if ball_label != 'white' and ball_label != 0}
+        # del ball_pos['white']
+        # del ball_pos[0]
+        # num_balls = len(list(ball_pos))
+        # best_holes = np.array([])
+        # distance = np.array([])
+        best_holes = {}
+        distance = {}
+        print(holes)
+        for ball in list(new_ball_pos):
+            print(ball)
+            # possible_holes = self.get_visible_holes(white_ball_pos, holes, new_ball_pos[ball])
+            possible_holes = holes
+            # print(ball_pos[ball])
+            # best_holes = np.append(best_holes, self.ball_hole_closest(ball_pos[ball], holes)[0])
+            # distance = np.append(distance, self.ball_hole_closest(ball_pos[ball], holes)[1])
+            best_holes[ball], distance[ball] = self.ball_hole_closest(new_ball_pos[ball], possible_holes)
+            # best_holes[ball - 1], distance[ball - 1] =  self.ball_hole_closest(ball_pos[ball], holes)
+
+        # print(ball_pos)
+    # Find the key (ball) with the minimum distance using min function
+        best_ball_key = min(distance, key=distance.get)
+        best_ball = new_ball_pos[best_ball_key]
+        print(f"Best ball is {best_ball_key}")
+        # print(f"best hole for {np.argmin(distance) + 1} {int(best_holes[np.argmin(distance)])}")
+        best_hole = holes[best_holes[best_ball_key]]
+        print(f"The best hole pos {best_hole}")
+
+        # best_ball, best_hole = self.ball_white_closest(new_ball_pos, white_ball_pos, holes)
+
+        direction = self.decide_white_shooting_direction(white_ball_pos, best_ball, best_hole)
+
+        force = self.decide_force(white_ball_pos, best_ball, best_hole)
+        print(ball_pos)
+        # force = self.decide_force_hard(direction, white_ball_pos, ball_pos, holes)
+        return (direction/np.pi, force)
+        # return (-0.5, 1)
+        # return(0.5, 0.1)
